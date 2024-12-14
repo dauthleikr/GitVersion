@@ -106,7 +106,7 @@ internal class IncrementStrategyFinder(IRepositoryStore repositoryStore, ITagged
                 .ToHashSet()
         );
 
-        var intermediateCommits = GetIntermediateCommits(baseVersionSource, currentCommit, ignore).ToArray();
+        var intermediateCommits = GetIntermediateCommitsFromGraphHistory(baseVersionSource, currentCommit, ignore).ToArray();
         var commitLog = intermediateCommits.ToDictionary(element => element.Id.Sha);
 
         foreach (var intermediateCommit in intermediateCommits.Reverse())
@@ -136,7 +136,7 @@ internal class IncrementStrategyFinder(IRepositoryStore repositoryStore, ITagged
     /// Get the sequence of commits in a repository between a <paramref name="baseCommit"/> (exclusive)
     /// and a particular <paramref name="headCommit"/> (inclusive)
     /// </summary>
-    private IEnumerable<ICommit> GetIntermediateCommits(ICommit? baseCommit, ICommit headCommit, IIgnoreConfiguration ignore)
+    private IEnumerable<ICommit> GetIntermediateCommitsFromLinearHistory(ICommit? baseCommit, ICommit headCommit, IIgnoreConfiguration ignore)
     {
         var map = GetHeadCommitsMap(headCommit, ignore);
 
@@ -149,6 +149,31 @@ internal class IncrementStrategyFinder(IRepositoryStore repositoryStore, ITagged
 
         var headCommits = GetHeadCommits(headCommit, ignore);
         return new ArraySegment<ICommit>(headCommits, commitAfterBaseIndex, headCommits.Length - commitAfterBaseIndex);
+    }
+
+    /// <summary>
+    /// Gets all commits which can be reached when walking the commit graph from <paramref name="headCommit"/> to <paramref name="baseCommit"/> in no particular order.
+    /// If multiple paths exists, commits from all paths are included in the result.
+    /// </summary>
+    private IEnumerable<ICommit> GetIntermediateCommitsFromGraphHistory(ICommit? baseCommit, ICommit headCommit, IIgnoreConfiguration ignore)
+    {
+        var map = baseCommit != null ? GetHeadCommitsMap(baseCommit, ignore) : new Dictionary<string, int>();
+        var commits = new List<ICommit>();
+        var pending = new Queue<ICommit>();
+        pending.Enqueue(headCommit);
+
+        while (pending.Count > 0)
+        {
+            var commit = pending.Dequeue();
+            if (map.ContainsKey(commit.Sha) || commits.Contains(commit))
+                continue;
+
+            commits.Add(commit);
+            foreach (var parent in commit.Parents)
+                pending.Enqueue(parent);
+        }
+
+        return ignore.Filter(commits.ToArray());
     }
 
     /// <summary>
@@ -198,7 +223,7 @@ internal class IncrementStrategyFinder(IRepositoryStore repositoryStore, ITagged
         ICommit findMergeBase = this.repositoryStore.FindMergeBase(baseCommit, mergedCommit)
             ?? throw new InvalidOperationException("Cannot find the base commit of merged branch.");
 
-        return GetIntermediateCommits(findMergeBase, mergedCommit, ignore);
+        return GetIntermediateCommitsFromLinearHistory(findMergeBase, mergedCommit, ignore);
     }
 
     private static ICommit GetMergedHead(ICommit mergeCommit)
